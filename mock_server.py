@@ -21,10 +21,10 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
             "/localhost.sql": ("application/sql", 200),
         }
 
-        path = self.path
-        if path in test_responses:
-            ctype, size = test_responses[path]
-            try:
+        try:
+            path = self.path
+            if path in test_responses:
+                ctype, size = test_responses[path]
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(size))
@@ -33,16 +33,12 @@ class MockHandler(http.server.BaseHTTPRequestHandler):
                 # Если это GET, отправляем "тело" файла (просто мусор нужного размера)
                 if self.command == "GET":
                     self.wfile.write(b"a" * size)
-            except (ConnectionError, BrokenPipeError):
-                # Игнорируем ошибки, если клиент закрыл соединение раньше времени
-                pass
-        else:
-            try:
+            else:
                 # Для всех остальных путей отдаем 404
                 self.send_response(404)
                 self.end_headers()
-            except (ConnectionError, BrokenPipeError):
-                pass
+        except (ConnectionError, BrokenPipeError):
+            pass
 
     do_GET = handle_request
     do_HEAD = handle_request
