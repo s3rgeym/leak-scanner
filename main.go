@@ -71,6 +71,7 @@ type Task struct {
 
 var (
 	inputFile   string
+	outputFile  string
 	workers     int
 	timeout     time.Duration
 	readTimeout time.Duration
@@ -235,6 +236,10 @@ func logDebug(format string, a ...any) {
 }
 
 func logInfo(format string, a ...any) {
+	fmt.Fprintf(os.Stderr, colorYellow+"[I] "+format+colorReset+"\n", a...)
+}
+
+func logSuccess(format string, a ...any) {
 	fmt.Fprintf(os.Stderr, colorGreen+"[+] "+format+colorReset+"\n", a...)
 }
 
@@ -248,6 +253,7 @@ func logError(format string, a ...any) {
 
 func init() {
 	flag.StringVar(&inputFile, "i", "", "File with URL list")
+	flag.StringVar(&outputFile, "o", "", "Output file (default: stdout)")
 	flag.IntVar(&workers, "w", 20, "Number of workers")
 	flag.DurationVar(&timeout, "t", 15*time.Second, "Dial timeout")
 	flag.DurationVar(&readTimeout, "rt", 10*time.Second, "Total HTTP client timeout")
@@ -301,6 +307,17 @@ func main() {
 		os.Exit(1)
 	}
 
+	var out io.Writer = os.Stdout
+	if outputFile != "" {
+		f, err := os.Create(outputFile)
+		if err != nil {
+			logError("Output file error: %v", err)
+			os.Exit(1)
+		}
+		defer f.Close()
+		out = f
+	}
+
 	var rl ratelimit.Limiter
 	if rps > 0 {
 		rl = ratelimit.New(rps)
@@ -351,9 +368,9 @@ func main() {
 
 				if checkURL(client, task, errCount) {
 					if verbose {
-						logInfo("Found %s", task.URL)
+						logSuccess("Found %s", task.URL)
 					}
-					fmt.Println(task.URL)
+					fmt.Fprintln(out, task.URL)
 				}
 			}
 		})
@@ -494,7 +511,9 @@ func readURLs(path string) []string {
 
 func loadConfig(path string) Config {
 	if path == "" {
-		logInfo("Using default rules")
+		if verbose {
+			logInfo("Using default rules")
+		}
 		return defaultConf
 	}
 	var conf Config
@@ -502,6 +521,8 @@ func loadConfig(path string) Config {
 		logWarn("Config error: %v. Using defaults.", err)
 		return defaultConf
 	}
-	logInfo("Loaded config from %s", path)
+	if verbose {
+		logInfo("Loaded config from %s", path)
+	}
 	return conf
 }
