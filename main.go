@@ -438,7 +438,7 @@ func checkURL(client *http.Client, task Task, errCount *int32) bool {
 		}
 
 		contentTypes := append([]string(nil), task.ContentTypes...)
-		contentTypes = append(contentTypes, "application/processtet-stream", "application/x-binary")
+		contentTypes = append(contentTypes, "application/octet-stream", "application/x-binary")
 
 		for _, expected := range contentTypes {
 			expected = strings.ToLower(expected)
