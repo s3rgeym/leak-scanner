@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/url"
@@ -45,7 +46,6 @@ const (
 	// Дополнительные эффекты
 	underline = "\033[4m"
 
-	chromeUA     = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
 	chromeAccept = "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
 	chromeLang   = "en-US,en;q=0.9"
 
@@ -74,7 +74,6 @@ var (
 	workers     int
 	timeout     time.Duration
 	readTimeout time.Duration
-	userAgent   string
 	insecure    bool
 	configPath  string
 	verbose     bool
@@ -248,10 +247,9 @@ func logError(format string, a ...any) {
 
 func init() {
 	flag.StringVar(&inputFile, "i", "", "File with URL list")
-	flag.IntVar(&workers, "w", 10, "Number of workers")
-	flag.DurationVar(&timeout, "t", 5*time.Second, "Dial timeout")
+	flag.IntVar(&workers, "w", 20, "Number of workers")
+	flag.DurationVar(&timeout, "t", 15*time.Second, "Dial timeout")
 	flag.DurationVar(&readTimeout, "rt", 10*time.Second, "Total HTTP client timeout")
-	flag.StringVar(&userAgent, "ua", chromeUA, "User-Agent header")
 	flag.BoolVar(&insecure, "k", false, "Ignore SSL errors")
 	flag.StringVar(&configPath, "c", "", "Path to TOML config")
 	flag.BoolVar(&verbose, "v", false, "Verbose mode")
@@ -268,15 +266,26 @@ func getBaseDomainName(host string) string {
 }
 
 func setBrowserHeaders(req *http.Request, baseURL string) {
-	req.Header.Set("User-Agent", userAgent)
+	v := rand.Intn(24) + 120
+	version := fmt.Sprintf("%d", v)
+	ua := fmt.Sprintf("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/%s.0.0.0 Safari/537.36", version)
+
+	if verbose {
+		logDebug(ua)
+	}
+
+	req.Header.Set("User-Agent", ua)
 	req.Header.Set("Accept", chromeAccept)
 	req.Header.Set("Accept-Language", chromeLang)
 	req.Header.Set("Referer", baseURL+"/")
 	req.Header.Set("Origin", baseURL)
 	req.Header.Set("Connection", "keep-alive")
-	req.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"122\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"122\"")
+	req.Header.Set("Sec-Ch-Ua", fmt.Sprintf("\"Chromium\";v=\"%s\", \"Not(A:Brand\";v=\"24\", \"Google Chrome\";v=\"%s\"", version, version))
 	req.Header.Set("Sec-Ch-Ua-Mobile", "?0")
 	req.Header.Set("Sec-Ch-Ua-Platform", "\"Windows\"")
+	// Пробуем обойти говно-фильтры, представившись локальным сервисом
+	req.Header.Set("X-Forwarded-For", "127.0.0.1")
+	req.Header.Set("X-Real-IP", "127.0.0.1")
 }
 
 func main() {
