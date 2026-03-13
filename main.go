@@ -79,6 +79,7 @@ var (
 	verbose     bool
 	rps         int
 	baseErrors  sync.Map
+	seenUrls    sync.Map
 	defaultConf = Config{
 		Rules: []Rule{
 			// Shell & Env (Home dir)
@@ -329,6 +330,13 @@ func main() {
 			}
 
 			for task := range tasks {
+				if _, loaded := seenUrls.LoadOrStore(task.URL, true); loaded {
+					if verbose {
+						logWarn("Skip: already seen: %s", task.URL)
+					}
+					continue
+				}
+
 				val, _ := baseErrors.LoadOrStore(task.BaseURL, new(int32))
 				errCount := val.(*int32)
 
