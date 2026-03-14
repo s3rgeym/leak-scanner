@@ -473,7 +473,7 @@ func checkURL(client *http.Client, task Task, errCount *int32, out io.Writer) {
 				if verbose {
 					logSuccess("Found %s", resp.Request.URL)
 				}
-				fmt.Fprintf(out, "%s\t%s\n", resp.Request.URL, resp.ContentLength)
+				fmt.Fprintf(out, "%s - %s - %d\n", resp.Request.URL, ct, resp.ContentLength)
 				return
 			}
 		}
