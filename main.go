@@ -2,12 +2,13 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"flag"
 	"fmt"
+	"go.uber.org/ratelimit"
 	"io"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -15,9 +16,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-
-	"github.com/BurntSushi/toml"
-	"go.uber.org/ratelimit"
 )
 
 const (
@@ -53,13 +51,13 @@ const (
 )
 
 type Rule struct {
-	Path         string   `toml:"path"`
-	ContentTypes []string `toml:"content_types"`
-	MinSize      int64    `toml:"min_size"`
+	Path         string
+	ContentTypes []string
+	MinSize      int64
 }
 
 type Config struct {
-	Rules []Rule `toml:"rule"`
+	Rules []Rule
 }
 
 type Task struct {
@@ -74,9 +72,7 @@ var (
 	outputFile  string
 	workers     int
 	timeout     time.Duration
-	readTimeout time.Duration
 	insecure    bool
-	configPath  string
 	verbose     bool
 	rps         int
 	baseErrors  sync.Map
@@ -255,12 +251,10 @@ func init() {
 	flag.StringVar(&inputFile, "i", "", "File with URL list")
 	flag.StringVar(&outputFile, "o", "", "Output file (default: stdout)")
 	flag.IntVar(&workers, "w", 20, "Number of workers")
-	flag.DurationVar(&timeout, "t", 15*time.Second, "Dial timeout")
-	flag.DurationVar(&readTimeout, "rt", 10*time.Second, "Total HTTP client timeout")
+	flag.DurationVar(&timeout, "t", 15*time.Second, "Request timeout")
 	flag.BoolVar(&insecure, "k", false, "Ignore SSL errors")
-	flag.StringVar(&configPath, "c", "", "Path to TOML config")
 	flag.BoolVar(&verbose, "v", false, "Verbose mode")
-	flag.IntVar(&rps, "r", 0, "Requests per second")
+	flag.IntVar(&rps, "r", 0, "Ratelimit: requests per second")
 }
 
 func getBaseDomainName(host string) string {
@@ -299,7 +293,6 @@ func main() {
 	flag.Parse()
 
 	logInfo("Starting %s", appName)
-	config := loadConfig(configPath)
 	urls := readURLs(inputFile)
 
 	if len(urls) == 0 {
@@ -327,19 +320,17 @@ func main() {
 
 	tasks := make(chan Task, workers*2)
 	var wg sync.WaitGroup
+	wg.Add(workers)
 
 	for i := 0; i < workers; i++ {
-		wg.Go(func() {
+		go func() {
+			defer wg.Done()
 
 			transport := &http.Transport{
-				TLSClientConfig:       &tls.Config{InsecureSkipVerify: insecure},
-				ResponseHeaderTimeout: timeout,
-				DialContext: (&net.Dialer{
-					Timeout: timeout,
-				}).DialContext,
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: insecure},
 			}
+
 			client := &http.Client{
-				Timeout:   readTimeout,
 				Transport: transport,
 				CheckRedirect: func(req *http.Request, via []*http.Request) error {
 					return http.ErrUseLastResponse
@@ -366,14 +357,9 @@ func main() {
 
 				rl.Take()
 
-				if checkURL(client, task, errCount) {
-					if verbose {
-						logSuccess("Found %s", task.URL)
-					}
-					fmt.Fprintln(out, task.URL)
-				}
+				checkURL(client, task, errCount, out)
 			}
-		})
+		}()
 	}
 
 	for _, rawURL := range urls {
@@ -390,7 +376,7 @@ func main() {
 		baseDomainName := getBaseDomainName(domainName)
 		baseURL := fmt.Sprintf("%s://%s", parsed.Scheme, domainName)
 
-		for _, rule := range config.Rules {
+		for _, rule := range defaultConf.Rules {
 			path := rule.Path
 			path = strings.ReplaceAll(path, "{{domainName}}", domainName)
 			path = strings.ReplaceAll(path, "{{baseDomainName}}", baseDomainName)
@@ -416,20 +402,27 @@ func main() {
 	logInfo("%s finished!", appName)
 }
 
-func checkURL(client *http.Client, task Task, errCount *int32) bool {
+func checkURL(client *http.Client, task Task, errCount *int32, out io.Writer) {
 	if verbose {
 		logDebug("Check %s", task.URL)
 	}
 
-	req, _ := http.NewRequest("GET", task.URL, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	req, _ := http.NewRequestWithContext(ctx, "GET", task.URL, nil)
 	setBrowserHeaders(req, task.BaseURL)
 
 	resp, err := client.Do(req)
 	if err != nil {
+		if verbose {
+			logWarn("Client Error: %v", err)
+		}
+
 		if atomic.AddInt32(errCount, 1) == maxErrors {
 			logWarn("Host %s ignored after %d errors", task.BaseURL, maxErrors)
 		}
-		return false
+		return
 	}
 	defer resp.Body.Close()
 
@@ -461,14 +454,14 @@ func checkURL(client *http.Client, task Task, errCount *int32) bool {
 			if verbose {
 				logWarn("Skip: resource looks like HTML: %s", task.URL)
 			}
-			return false
+			return
 		}
 
 		if task.MinSize > resp.ContentLength {
 			if verbose {
 				logWarn("Skip %s: size too small (%d < %d)", task.URL, resp.ContentLength, task.MinSize)
 			}
-			return false
+			return
 		}
 
 		contentTypes := append([]string(nil), task.ContentTypes...)
@@ -477,12 +470,14 @@ func checkURL(client *http.Client, task Task, errCount *int32) bool {
 		for _, expected := range contentTypes {
 			expected = strings.ToLower(expected)
 			if strings.Contains(ct, expected) {
-				return true
+				if verbose {
+					logSuccess("Found %s", resp.Request.URL)
+				}
+				fmt.Fprintf(out, "%s\t%s\n", resp.Request.URL, resp.ContentLength)
+				return
 			}
 		}
 	}
-
-	return false
 }
 
 func readURLs(path string) []string {
@@ -507,22 +502,4 @@ func readURLs(path string) []string {
 		}
 	}
 	return results
-}
-
-func loadConfig(path string) Config {
-	if path == "" {
-		if verbose {
-			logInfo("Using default rules")
-		}
-		return defaultConf
-	}
-	var conf Config
-	if _, err := toml.DecodeFile(path, &conf); err != nil {
-		logWarn("Config error: %v. Using defaults.", err)
-		return defaultConf
-	}
-	if verbose {
-		logInfo("Loaded config from %s", path)
-	}
-	return conf
 }
